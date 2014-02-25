@@ -35,7 +35,7 @@ Usage:
         Optionally reencrypt existing passwords using new gpg-id.
     $program [ls] [subfolder]
         List passwords.
-    $program [show] [--clip,-c] pass-name
+    $program [show] [--clip,-c | --multiclip,-m] pass-name
         Show existing password and optionally put it on the clipboard.
         If put on the clipboard, it will be cleared in 45 seconds.
     $program insert [--echo,-e | --multiline,-m] [--force,-f] pass-name
@@ -76,6 +76,22 @@ git_add_file() {
 yesno() {
 	read -p "$1 [y/N] " response
 	[[ $response == [yY] ]] || exit 1
+}
+multiclip_input() {
+	echo
+	read -n 1 -p "Please make a choice: " input
+	echo
+	echo
+	re='^[0-9q]+$'
+	if ! [[ $input =~ $re ]] ; then
+		echo "Invalid input";
+	else
+		if [[ $input -eq "q" ]]; then
+			exit 1
+		fi
+		clip "${values[$input]}" "$path ${keys[$input]}"
+	fi
+	multiclip_input
 }
 #
 # BEGIN Platform definable
@@ -192,24 +208,49 @@ fi
 case "$command" in
 	show|ls|list)
 		clip=0
+		multiclip=0
 
-		opts="$($GETOPT -o c -l clip -n "$program" -- "$@")"
+		opts="$($GETOPT -o cm -l clip,multiclip -n "$program" -- "$@")"
+
 		err=$?
 		eval set -- "$opts"
 		while true; do case $1 in
 			-c|--clip) clip=1; shift ;;
+			-m|--multiclip) multiclip=1; shift ;;
 			--) shift; break ;;
 		esac done
 
 		if [[ $err -ne 0 ]]; then
-			echo "Usage: $program $command [--clip,-c] [pass-name]"
+			echo "Usage: $program $command [--clip,-c | --multiclip,-m] [pass-name]"
 			exit 1
 		fi
 
 		path="$1"
 		passfile="$PREFIX/$path.gpg"
 		if [[ -f $passfile ]]; then
-			if [[ $clip -eq 0 ]]; then
+			if [[ $multiclip -eq  1 ]]; then
+				i=1
+				content="$(gpg2 -d $GPG_OPTS "$passfile")"
+				[[ -n $content ]] || exit 1
+				echo "Which key or line do you want to copy to the clipboard?"
+				echo
+				while read -r line; do
+					if [[ $i -eq 1 ]]; then
+						keys[$i]="password"
+						values[$i]=$line
+					else
+						keys[$i]="$(sed -n 's/^\(.*\): \(.*\)/\1/p' <<< "$line")"
+						values[$i]="$(sed 's/^.*: //g' <<< "$line")"
+					fi
+					if [[ -z ${keys[$i]} ]]; then
+						keys[$i]="line $i"
+					fi
+					echo "$i) ${keys[$i]}"
+					(( i++ ))
+				done <<< "$content"
+				echo "q) quit"
+				multiclip_input
+			elif [[ $clip -eq 0 ]]; then
 				exec gpg2 -d $GPG_OPTS "$passfile"
 			else
 				pass="$(gpg2 -d $GPG_OPTS "$passfile" | head -n 1)"
@@ -339,7 +380,7 @@ case "$command" in
 		[[ -n $pass ]] || exit 1
 		gpg2 -e -r "$ID" -o "$passfile" $GPG_OPTS <<<"$pass"
 		git_add_file "$passfile" "Added generated password for $path to store."
-		
+
 		if [[ $clip -eq 0 ]]; then
 			echo "The generated password to $path is:"
 			echo "$pass"
